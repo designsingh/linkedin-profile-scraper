@@ -1,5 +1,5 @@
 import { Actor, log } from 'apify';
-import { CheerioCrawler } from 'crawlee';
+import { PlaywrightCrawler } from 'crawlee';
 import { parseProfile } from './parsers.js';
 import { normalizeProfileUrl, extractSlug, randomDelay, isLoginWall } from './utils.js';
 
@@ -56,12 +56,12 @@ let loginWallCount = 0;
 let errorCount = 0;
 
 // ── Crawler ────────────────────────────────────────────────────────────
-const crawler = new CheerioCrawler({
+const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxy,
     maxConcurrency: slowMode ? Math.min(maxConcurrency, 2) : maxConcurrency,
     maxRequestRetries: 5,
-    requestHandlerTimeoutSecs: 60,
-    navigationTimeoutSecs: 30,
+    requestHandlerTimeoutSecs: 90,
+    navigationTimeoutSecs: 60,
 
     // Session pool: rotates proxy + cookies on each retry so LinkedIn
     // sees a different "browser" fingerprint after a 999 block.
@@ -74,32 +74,24 @@ const crawler = new CheerioCrawler({
         },
     },
 
-    // Tell Crawlee to NOT throw on 999 — let us handle it in requestHandler
-    ignoreHttpErrorStatusCodes: [999],
+    // Headless browser config
+    headless: true,
+    launchContext: {
+        launchOptions: {
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+            ],
+        },
+    },
 
-    // got-scraping header ordering matters for TLS fingerprinting
+    // Pre-navigation: add delays and set realistic browser context
     preNavigationHooks: [
-        async ({ request, session }, gotOptions) => {
-            // Randomize User-Agent across common Chrome versions
-            const chromeVersions = ['120.0.0.0', '121.0.0.0', '122.0.0.0', '123.0.0.0', '124.0.0.0', '125.0.0.0'];
-            const randChrome = chromeVersions[Math.floor(Math.random() * chromeVersions.length)];
-
-            gotOptions.headers = {
-                ...gotOptions.headers,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Cache-Control': 'max-age=0',
-                'Sec-Ch-Ua': `"Chromium";v="${randChrome.split('.')[0]}", "Google Chrome";v="${randChrome.split('.')[0]}", "Not-A.Brand";v="99"`,
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"macOS"',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-                'User-Agent': `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${randChrome} Safari/537.36`,
-            };
+        async ({ page, session }) => {
+            // Hide webdriver property to avoid detection
+            await page.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            });
 
             // Slow mode: random delay between requests
             if (slowMode) {
@@ -111,10 +103,9 @@ const crawler = new CheerioCrawler({
         },
     ],
 
-    async requestHandler({ request, body, $, response, session }) {
+    async requestHandler({ request, page, response, session }) {
         const { slug } = request.userData;
-        const html = typeof body === 'string' ? body : body.toString();
-        const statusCode = response?.statusCode;
+        const statusCode = response?.status();
 
         // ── Handle 999 (LinkedIn anti-bot block) ───────────────────────
         if (statusCode === 999) {
@@ -127,6 +118,11 @@ const crawler = new CheerioCrawler({
             session?.retire();
             throw new Error(`HTTP ${statusCode} for ${slug} — retrying`);
         }
+
+        // Wait for page content to load
+        await page.waitForLoadState('domcontentloaded');
+
+        const html = await page.content();
 
         // ── Check for login wall / auth redirect in HTML ───────────────
         if (isLoginWall(html)) {
