@@ -27,7 +27,11 @@ export function parseProfile(html, profileUrl, options = {}) {
         || $('title').text().split(' - ')[0]?.split('|')[0]?.trim()
         || '';
 
-    const headline = person.jobTitle?.[0]
+    // LinkedIn masks job titles with asterisks for non-logged-in users in JSON-LD.
+    // If masked, skip and fall back to OG tags or visible HTML.
+    const rawJobTitle = person.jobTitle?.[0] || '';
+    const isMasked = rawJobTitle && /^\*[\s*]+$/.test(rawJobTitle.replace(/[^*\s]/g, ''));
+    const headline = (!isMasked && rawJobTitle)
         || extractHeadlineFromOg(ogTitle)
         || $('h2.top-card-layout__headline').text().trim()
         || '';
@@ -86,7 +90,7 @@ export function parseProfile(html, profileUrl, options = {}) {
         currentCompany,
         currentCompanyUrl,
         location,
-        about: about.substring(0, 2000), // cap length
+        about: cleanAbout(about),
         profileImageUrl,
         experience: includeExperience ? experience : undefined,
         experienceCount,
@@ -105,6 +109,35 @@ export function parseProfile(html, profileUrl, options = {}) {
 // ═══════════════════════════════════════════════════════════════════════
 // Internal helpers
 // ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Clean the about text by removing login wall HTML that LinkedIn injects
+ * partway through the public profile page.
+ */
+function cleanAbout(raw) {
+    if (!raw) return '';
+    // Cut at common login wall markers
+    const markers = [
+        'Welcome back',
+        'Email or phone',
+        'Sign in',
+        'see more',
+        'Join now',
+        'New to LinkedIn?',
+        'By clicking Continue',
+    ];
+    let cleaned = raw;
+    for (const marker of markers) {
+        const idx = cleaned.indexOf(marker);
+        if (idx > 0) {
+            cleaned = cleaned.substring(0, idx);
+        }
+    }
+    // Remove excess whitespace from stripped HTML
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    // Cap length
+    return cleaned.substring(0, 2000);
+}
 
 function extractJsonLd($) {
     let person = null;
@@ -177,10 +210,13 @@ function extractCurrentRole(person, $) {
     let currentCompany = '';
     let currentCompanyUrl = '';
 
-    // From JSON-LD
+    // From JSON-LD (skip if masked with asterisks)
     if (person.jobTitle) {
         const titles = Array.isArray(person.jobTitle) ? person.jobTitle : [person.jobTitle];
-        currentTitle = titles[0] || '';
+        const raw = titles[0] || '';
+        if (raw && !/^\*[\s*]+$/.test(raw.replace(/[^*\s]/g, ''))) {
+            currentTitle = raw;
+        }
     }
 
     if (person.worksFor) {
@@ -190,6 +226,13 @@ function extractCurrentRole(person, $) {
             currentCompany = current.name || '';
             currentCompanyUrl = current.url || current.sameAs || '';
         }
+    }
+
+    // If title is still empty, try to extract from OG title ("Name - Title - Company | LinkedIn")
+    if (!currentTitle) {
+        const ogTitle = $('meta[property="og:title"]').attr('content') || '';
+        const fromOg = extractHeadlineFromOg(ogTitle);
+        if (fromOg) currentTitle = fromOg;
     }
 
     // HTML fallback
