@@ -139,6 +139,30 @@ const crawler = new PlaywrightCrawler({
             throw new Error(`LinkedIn returned 999 for ${slug} — session retired, will retry with new proxy`);
         }
 
+        // ── Handle 404 (profile doesn't exist) — don't waste retries ──
+        if (statusCode === 404) {
+            log.warning(`Profile not found (404) for ${slug} — skipping`);
+            await Actor.pushData({
+                profileUrl: request.url,
+                fullName: '',
+                headline: '',
+                currentTitle: '',
+                currentCompany: '',
+                currentCompanyUrl: '',
+                location: '',
+                about: '',
+                profileImageUrl: '',
+                experienceCount: 0,
+                educationCount: 0,
+                followerCount: '',
+                connectionCount: '',
+                dataQuality: 'not_found',
+                loginWallDetected: false,
+                scrapedAt: new Date().toISOString(),
+            });
+            return;
+        }
+
         // ── Handle other non-2xx ───────────────────────────────────────
         if (statusCode && statusCode >= 400) {
             session?.retire();
