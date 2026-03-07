@@ -245,7 +245,11 @@ function extractCurrentRole(person, $) {
     if (!currentTitle || !currentCompany) {
         const expItem = $('li.experience-item, li.profile-section-card').first();
         if (!currentTitle) {
-            currentTitle = expItem.find('h3, span.experience-item__title').text().trim() || currentTitle;
+            const htmlTitle = expItem.find('h3, span.experience-item__title').text().trim();
+            // Don't use it if it's the same as the company (masked profiles show company in h3)
+            if (htmlTitle && htmlTitle.toLowerCase() !== currentCompany.toLowerCase()) {
+                currentTitle = htmlTitle;
+            }
         }
         if (!currentCompany) {
             currentCompany = expItem.find('h4, span.experience-item__subtitle').text().trim() || currentCompany;
