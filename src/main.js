@@ -104,7 +104,7 @@ const crawler = new PlaywrightCrawler({
     // Session pool: rotates proxy + cookies on each retry so LinkedIn
     // sees a different "browser" fingerprint after a 999 block.
     useSessionPool: true,
-    persistCookiesPerSession: true,
+    persistCookiesPerSession: false,
     sessionPoolOptions: {
         maxPoolSize: 50,
         sessionOptions: {
@@ -112,18 +112,14 @@ const crawler = new PlaywrightCrawler({
         },
     },
 
-    // Pre-navigation: inject cookie + set Google referer + realistic delays
+    // Pre-navigation: inject cookie + set headers + realistic delays
     preNavigationHooks: [
         async ({ page, request }) => {
+            const context = page.context();
+
             // Inject li_at cookie if provided — gives access to unmasked job titles
             if (cookie) {
-                log.info(`Injecting li_at cookie (${cookie.substring(0, 8)}...${cookie.substring(cookie.length - 4)}) for ${request.userData.slug}`);
-                const context = page.context();
-
-                // First navigate to LinkedIn domain so we can set cookies on it
-                // (Playwright requires matching domain for cookie injection)
-                await page.goto('https://www.linkedin.com/robots.txt', { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
-
+                log.info(`Setting li_at cookie (${cookie.length} chars) for ${request.userData.slug}`);
                 await context.addCookies([
                     {
                         name: 'li_at',
@@ -143,17 +139,18 @@ const crawler = new PlaywrightCrawler({
                         secure: true,
                         sameSite: 'None',
                     },
+                    {
+                        name: 'lang',
+                        value: 'v=2&lang=en-us',
+                        domain: '.linkedin.com',
+                        path: '/',
+                        secure: true,
+                        sameSite: 'None',
+                    },
                 ]);
-
-                // Verify cookies were set
-                const cookies = await context.cookies('https://www.linkedin.com');
-                const hasLiAt = cookies.some(c => c.name === 'li_at');
-                log.info(`Cookie verification: li_at=${hasLiAt ? 'SET' : 'MISSING'} (${cookies.length} total cookies)`);
-            } else {
-                log.info(`No cookie provided — running without authentication for ${request.userData.slug}`);
             }
 
-            // Set realistic headers (skip Google referer when using cookie — looks more natural)
+            // Set realistic headers
             await page.setExtraHTTPHeaders({
                 'Accept-Language': 'en-US,en;q=0.9',
                 ...(cookie ? {} : { 'Referer': 'https://www.google.com/' }),
@@ -171,6 +168,13 @@ const crawler = new PlaywrightCrawler({
     async requestHandler({ request, page, response, session }) {
         const { slug } = request.userData;
         const statusCode = response?.status();
+
+        // Log cookie status after navigation
+        if (cookie) {
+            const pageCookies = await page.context().cookies('https://www.linkedin.com');
+            const liAt = pageCookies.find(c => c.name === 'li_at');
+            log.info(`[${slug}] Cookie check after navigation: li_at=${liAt ? 'PRESENT' : 'MISSING'}, status=${statusCode}, total_cookies=${pageCookies.length}`);
+        }
 
         // ── Handle 999 (LinkedIn anti-bot block) ───────────────────────
         if (statusCode === 999) {
