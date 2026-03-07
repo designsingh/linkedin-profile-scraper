@@ -1,7 +1,13 @@
 import { Actor, log } from 'apify';
 import { PlaywrightCrawler } from 'crawlee';
+import { chromium } from 'playwright-extra';
+import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { parseProfile } from './parsers.js';
 import { normalizeProfileUrl, extractSlug, randomDelay, isLoginWall } from './utils.js';
+
+// Enable stealth mode — patches webdriver, chrome.runtime, navigator.plugins,
+// WebGL, canvas fingerprinting, iframe contentWindow, and more.
+chromium.use(stealthPlugin());
 
 await Actor.init();
 
@@ -44,10 +50,23 @@ for (const raw of profileUrls) {
 log.info(`Processing ${requests.length} unique profiles (from ${profileUrls.length} inputs)`);
 
 // ── Proxy ──────────────────────────────────────────────────────────────
-// Crawlee v3 ProxyConfiguration doesn't accept useApifyProxy; use Apify's helper.
+// Force residential + US country for best results against LinkedIn.
 let proxy;
 if (proxyConfig) {
-    proxy = await Actor.createProxyConfiguration(proxyConfig);
+    proxy = await Actor.createProxyConfiguration({
+        ...proxyConfig,
+        countryCode: proxyConfig.countryCode || 'US',
+    });
+} else {
+    // Fallback: try to use Apify proxy even if not configured
+    try {
+        proxy = await Actor.createProxyConfiguration({
+            groups: ['RESIDENTIAL'],
+            countryCode: 'US',
+        });
+    } catch {
+        log.warning('No proxy configuration available. Running without proxy (will likely be blocked).');
+    }
 }
 
 // ── Stats ──────────────────────────────────────────────────────────────
@@ -60,8 +79,26 @@ const crawler = new PlaywrightCrawler({
     proxyConfiguration: proxy,
     maxConcurrency: slowMode ? Math.min(maxConcurrency, 2) : maxConcurrency,
     maxRequestRetries: 5,
-    requestHandlerTimeoutSecs: 90,
+    requestHandlerTimeoutSecs: 120,
     navigationTimeoutSecs: 60,
+
+    // Use playwright-extra with stealth plugin as the launcher
+    launchContext: {
+        launcher: chromium,
+        launchOptions: {
+            headless: true,
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+            ],
+        },
+    },
+
+    // Disable Crawlee's built-in fingerprints when using stealth plugin
+    // to avoid conflicts between the two fingerprinting systems.
+    browserPoolOptions: {
+        useFingerprints: false,
+    },
 
     // Session pool: rotates proxy + cookies on each retry so LinkedIn
     // sees a different "browser" fingerprint after a 999 block.
@@ -74,31 +111,20 @@ const crawler = new PlaywrightCrawler({
         },
     },
 
-    // Headless browser config
-    headless: true,
-    launchContext: {
-        launchOptions: {
-            args: [
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-            ],
-        },
-    },
-
-    // Pre-navigation: add delays and set realistic browser context
+    // Pre-navigation: set Google referer + realistic delays
     preNavigationHooks: [
-        async ({ page, session }) => {
-            // Hide webdriver property to avoid detection
-            await page.addInitScript(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        async ({ page, request }) => {
+            // Set Google as referer so it looks like user clicked from search results
+            await page.setExtraHTTPHeaders({
+                'Referer': 'https://www.google.com/',
+                'Accept-Language': 'en-US,en;q=0.9',
             });
 
-            // Slow mode: random delay between requests
+            // Delay between requests
             if (slowMode) {
-                await randomDelay(2000, 5000);
+                await randomDelay(3000, 6000);
             } else {
-                // Even in normal mode, add a small delay to avoid rapid-fire
-                await randomDelay(500, 1500);
+                await randomDelay(1500, 3000);
             }
         },
     ],
@@ -119,8 +145,14 @@ const crawler = new PlaywrightCrawler({
             throw new Error(`HTTP ${statusCode} for ${slug} — retrying`);
         }
 
-        // Wait for page content to load
+        // Wait for page content to fully load
         await page.waitForLoadState('domcontentloaded');
+
+        // Simulate human-like behavior: small scroll + wait
+        await page.mouse.move(300 + Math.random() * 200, 400 + Math.random() * 200);
+        await randomDelay(500, 1000);
+        await page.evaluate(() => window.scrollBy(0, 300 + Math.random() * 200));
+        await randomDelay(300, 800);
 
         const html = await page.content();
 
