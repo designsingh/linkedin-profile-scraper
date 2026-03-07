@@ -1,0 +1,17 @@
+{
+  "name": "linkedin-profile-scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Scrape publicly available LinkedIn profile data without login. Extract current titles, companies, locations, and more from public profiles. Designed for recruiting, lead enrichment, and event attendee research.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "dependencies": {
+    "apify": "^3.1.0",
+    "crawlee": "^3.5.0",
+    "cheerio": "^1.0.0-rc.12"
+  },
+  "author": "Preet Arjun",
+  "license": "ISC"
+}

@@ -1,0 +1,84 @@
+{
+  "actorSpecification": 1,
+  "name": "linkedin-profile-scraper",
+  "title": "LinkedIn Profile Scraper — No Cookies",
+  "description": "Scrape public LinkedIn profile data without login or cookies. Extract names, headlines, current titles, companies, locations, education, skills, and more. Pay per result.",
+  "version": "1.0.0",
+  "buildTag": "latest",
+  "input": "./input_schema.json",
+  "dockerfile": "./Dockerfile",
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "title": "LinkedIn Profiles",
+      "views": {
+        "overview": {
+          "title": "Overview",
+          "transformation": {
+            "fields": [
+              "profileUrl",
+              "fullName",
+              "headline",
+              "currentTitle",
+              "currentCompany",
+              "location",
+              "dataQuality"
+            ]
+          },
+          "display": {
+            "component": "table",
+            "properties": {
+              "profileUrl": { "label": "Profile URL", "format": "text" },
+              "fullName": { "label": "Name", "format": "text" },
+              "headline": { "label": "Headline", "format": "text" },
+              "currentTitle": { "label": "Title", "format": "text" },
+              "currentCompany": { "label": "Company", "format": "text" },
+              "location": { "label": "Location", "format": "text" },
+              "dataQuality": { "label": "Quality", "format": "text" }
+            }
+          }
+        },
+        "detailed": {
+          "title": "Detailed",
+          "transformation": {
+            "fields": [
+              "profileUrl",
+              "fullName",
+              "headline",
+              "currentTitle",
+              "currentCompany",
+              "location",
+              "about",
+              "experienceCount",
+              "educationCount",
+              "followerCount",
+              "connectionCount",
+              "profileImageUrl",
+              "dataQuality",
+              "scrapedAt"
+            ]
+          },
+          "display": {
+            "component": "table",
+            "properties": {
+              "profileUrl": { "label": "Profile URL", "format": "text" },
+              "fullName": { "label": "Name", "format": "text" },
+              "headline": { "label": "Headline", "format": "text" },
+              "currentTitle": { "label": "Title", "format": "text" },
+              "currentCompany": { "label": "Company", "format": "text" },
+              "location": { "label": "Location", "format": "text" },
+              "about": { "label": "About", "format": "text" },
+              "experienceCount": { "label": "Experiences", "format": "number" },
+              "educationCount": { "label": "Education", "format": "number" },
+              "followerCount": { "label": "Followers", "format": "text" },
+              "connectionCount": { "label": "Connections", "format": "text" },
+              "profileImageUrl": { "label": "Avatar", "format": "text" },
+              "dataQuality": { "label": "Quality", "format": "text" },
+              "scrapedAt": { "label": "Scraped", "format": "text" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
