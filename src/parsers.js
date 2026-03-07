@@ -161,9 +161,15 @@ function extractJsonLd($) {
 
 function extractHeadlineFromOg(ogTitle) {
     // OG title format: "Name - Title - Company | LinkedIn"
+    // When masked: "Name - Company | LinkedIn" (only 2 parts — no title to extract)
     const parts = ogTitle.split(' - ');
-    if (parts.length >= 2) {
-        return parts.slice(1).join(' - ').replace(/\s*\|?\s*LinkedIn\s*$/, '').trim();
+    if (parts.length >= 3) {
+        // Has title: return middle parts (everything between name and "Company | LinkedIn")
+        return parts.slice(1, -1).join(' - ').trim();
+    }
+    // Only 2 parts = name + company, no title available
+    if (parts.length === 2) {
+        return '';
     }
     return '';
 }
