@@ -73,10 +73,23 @@ No charge for blocked or failed requests.
 
 ## Deploy
 
-1. Unzip → `git init` → push to GitHub
-2. Apify Console → Link Git repo → Build
-3. Set PPR pricing at $2/1,000 profiles
-4. Publish to store
+### 1. Push to GitHub
+
+```bash
+# Create a new repo on GitHub (github.com → New repository), then:
+git remote add origin https://github.com/YOUR_USERNAME/linkedin-profile-scraper.git
+git branch -M main
+git push -u origin main
+```
+
+Or with SSH: `git@github.com:YOUR_USERNAME/linkedin-profile-scraper.git`
+
+### 2. Apify Console → Link Git repo → Build
+
+1. Go to [Apify Console](https://console.apify.com/) → **Actors** → **Create new** → **Import from Git repository**.
+2. Paste your repo URL (e.g. `https://github.com/YOUR_USERNAME/linkedin-profile-scraper`) and connect (GitHub OAuth if needed).
+3. Apify will detect `.actor/actor.json` and use it. Click **Build** to build the Docker image.
+4. (Optional) Set **Pay per result** pricing at $2/1,000 profiles, then **Publish** to the Apify Store.
 
 ## Disclaimer
 
