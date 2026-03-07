@@ -234,12 +234,37 @@ const crawler = new PlaywrightCrawler({
             includeSkills,
         });
 
-        // Sanity check: if we got no name, the page might be garbage
-        if (!profile.fullName && profile.dataQuality === 'minimal') {
+        // Sanity check: if name is empty or is the login page title, the page is garbage
+        const isGarbage = !profile.fullName
+            || profile.dataQuality === 'minimal'
+            || /log\s*in|sign\s*up/i.test(profile.fullName);
+
+        if (isGarbage) {
             if (request.retryCount < 3) {
                 session?.retire();
-                throw new Error(`Got empty profile for ${slug} — retrying`);
+                throw new Error(`Got empty/garbage profile for ${slug} (name: "${profile.fullName}") — retrying`);
             }
+            // After retries exhausted, save as blocked
+            loginWallCount++;
+            await Actor.pushData({
+                profileUrl: request.url,
+                fullName: '',
+                headline: '',
+                currentTitle: '',
+                currentCompany: '',
+                currentCompanyUrl: '',
+                location: '',
+                about: '',
+                profileImageUrl: '',
+                experienceCount: 0,
+                educationCount: 0,
+                followerCount: '',
+                connectionCount: '',
+                dataQuality: 'blocked',
+                loginWallDetected: true,
+                scrapedAt: new Date().toISOString(),
+            });
+            return;
         }
 
         // Charge event for PPR/PPE billing

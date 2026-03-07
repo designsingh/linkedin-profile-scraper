@@ -9,17 +9,23 @@
 export function normalizeProfileUrl(input) {
     let trimmed = input.trim().replace(/\/+$/, '');
 
-    // Already a full URL
-    if (/^https?:\/\/(www\.)?linkedin\.com\/in\//i.test(trimmed)) {
-        // Ensure https and www
-        const slug = trimmed.replace(/^https?:\/\/(www\.)?linkedin\.com\/in\//i, '');
+    // Handle country-specific subdomains (ca.linkedin.com, uk.linkedin.com, etc.)
+    // and mobile URLs (mwlite)
+    if (/^https?:\/\/([a-z]{2}\.)?linkedin\.com\/(mwlite\/)?in\//i.test(trimmed)) {
+        const slug = trimmed.replace(/^https?:\/\/([a-z]{2}\.)?(www\.)?linkedin\.com\/(mwlite\/)?in\//i, '');
         return `https://www.linkedin.com/in/${slug}`;
     }
 
-    // Missing protocol: linkedin.com/in/username
-    if (/^(www\.)?linkedin\.com\/in\//i.test(trimmed)) {
-        const slug = trimmed.replace(/^(www\.)?linkedin\.com\/in\//i, '');
+    // Missing protocol but has linkedin.com domain (including Www, www, etc.)
+    if (/^(www\.|Www\.)?linkedin\.com\/(mwlite\/)?in\//i.test(trimmed)) {
+        const slug = trimmed.replace(/^(www\.|Www\.)?linkedin\.com\/(mwlite\/)?in\//i, '');
         return `https://www.linkedin.com/in/${slug}`;
+    }
+
+    // Just the /in/username path (no domain)
+    if (/^\/in\//i.test(trimmed)) {
+        const slug = trimmed.replace(/^\/in\//i, '');
+        if (slug && !slug.includes(' ')) return `https://www.linkedin.com/in/${slug}`;
     }
 
     // Bare slug
@@ -52,14 +58,30 @@ export function randomDelay(minMs = 1000, maxMs = 3000) {
  */
 export function isLoginWall(html) {
     if (!html) return true;
-    const indicators = [
+    const lower = html.substring(0, 10000).toLowerCase();
+
+    // Strong signals — the page title or URL-based redirects
+    const strongIndicators = [
+        '<title>linkedin: log in or sign up</title>',
         'authwall',
-        'login',
-        'sign-in',
         'uas/login',
         'session_redirect',
         'checkpoint/challenge',
+        'join now to see the full profile',
+        'sign in to view this profile',
     ];
-    const lower = html.substring(0, 5000).toLowerCase();
-    return indicators.some((ind) => lower.includes(ind));
+    if (strongIndicators.some((ind) => lower.includes(ind))) return true;
+
+    // If <title> contains a person name + "LinkedIn", it's a real profile page
+    if (/<title>[^<]*\|?\s*linkedin<\/title>/i.test(lower) && !lower.includes('log in or sign up')) {
+        return false;
+    }
+
+    // Check for login form elements as a fallback
+    const formIndicators = [
+        'name="session_key"',
+        'name="session_password"',
+        'id="join-form"',
+    ];
+    return formIndicators.some((ind) => lower.includes(ind));
 }
