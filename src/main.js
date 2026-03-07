@@ -1,5 +1,5 @@
 import { Actor, log } from 'apify';
-import { CheerioCrawler, ProxyConfiguration } from 'crawlee';
+import { CheerioCrawler } from 'crawlee';
 import { parseProfile } from './parsers.js';
 import { normalizeProfileUrl, extractSlug, randomDelay, isLoginWall } from './utils.js';
 
@@ -44,9 +44,10 @@ for (const raw of profileUrls) {
 log.info(`Processing ${requests.length} unique profiles (from ${profileUrls.length} inputs)`);
 
 // ── Proxy ──────────────────────────────────────────────────────────────
+// Crawlee v3 ProxyConfiguration doesn't accept useApifyProxy; use Apify's helper.
 let proxy;
 if (proxyConfig) {
-    proxy = new ProxyConfiguration(proxyConfig);
+    proxy = await Actor.createProxyConfiguration(proxyConfig);
 }
 
 // ── Stats ──────────────────────────────────────────────────────────────
