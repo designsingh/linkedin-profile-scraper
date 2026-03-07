@@ -114,10 +114,16 @@ const crawler = new PlaywrightCrawler({
 
     // Pre-navigation: inject cookie + set Google referer + realistic delays
     preNavigationHooks: [
-        async ({ page, request, browserController }) => {
+        async ({ page, request }) => {
             // Inject li_at cookie if provided — gives access to unmasked job titles
             if (cookie) {
+                log.info(`Injecting li_at cookie (${cookie.substring(0, 8)}...${cookie.substring(cookie.length - 4)}) for ${request.userData.slug}`);
                 const context = page.context();
+
+                // First navigate to LinkedIn domain so we can set cookies on it
+                // (Playwright requires matching domain for cookie injection)
+                await page.goto('https://www.linkedin.com/robots.txt', { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+
                 await context.addCookies([
                     {
                         name: 'li_at',
@@ -128,13 +134,29 @@ const crawler = new PlaywrightCrawler({
                         secure: true,
                         sameSite: 'None',
                     },
+                    {
+                        name: 'JSESSIONID',
+                        value: `"ajax:${Date.now()}"`,
+                        domain: '.www.linkedin.com',
+                        path: '/',
+                        httpOnly: false,
+                        secure: true,
+                        sameSite: 'None',
+                    },
                 ]);
+
+                // Verify cookies were set
+                const cookies = await context.cookies('https://www.linkedin.com');
+                const hasLiAt = cookies.some(c => c.name === 'li_at');
+                log.info(`Cookie verification: li_at=${hasLiAt ? 'SET' : 'MISSING'} (${cookies.length} total cookies)`);
+            } else {
+                log.info(`No cookie provided — running without authentication for ${request.userData.slug}`);
             }
 
-            // Set Google as referer so it looks like user clicked from search results
+            // Set realistic headers (skip Google referer when using cookie — looks more natural)
             await page.setExtraHTTPHeaders({
-                'Referer': 'https://www.google.com/',
                 'Accept-Language': 'en-US,en;q=0.9',
+                ...(cookie ? {} : { 'Referer': 'https://www.google.com/' }),
             });
 
             // Delay between requests
