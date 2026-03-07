@@ -50,6 +50,13 @@
       "maximum": 20,
       "editor": "number"
     },
+    "cookie": {
+      "title": "LinkedIn Cookie (li_at)",
+      "type": "string",
+      "description": "Your LinkedIn li_at session cookie. Enables access to unmasked job titles and richer profile data. Get it from Chrome DevTools → Application → Cookies → linkedin.com → li_at. Optional but strongly recommended.",
+      "editor": "textfield",
+      "isSecret": true
+    },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
       "type": "object",

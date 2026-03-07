@@ -21,6 +21,7 @@ const {
     slowMode = false,
     maxConcurrency = 5,
     proxyConfiguration: proxyConfig,
+    cookie = '',
 } = input;
 
 if (!profileUrls.length) {
@@ -111,9 +112,25 @@ const crawler = new PlaywrightCrawler({
         },
     },
 
-    // Pre-navigation: set Google referer + realistic delays
+    // Pre-navigation: inject cookie + set Google referer + realistic delays
     preNavigationHooks: [
-        async ({ page, request }) => {
+        async ({ page, request, browserController }) => {
+            // Inject li_at cookie if provided — gives access to unmasked job titles
+            if (cookie) {
+                const context = page.context();
+                await context.addCookies([
+                    {
+                        name: 'li_at',
+                        value: cookie,
+                        domain: '.linkedin.com',
+                        path: '/',
+                        httpOnly: true,
+                        secure: true,
+                        sameSite: 'None',
+                    },
+                ]);
+            }
+
             // Set Google as referer so it looks like user clicked from search results
             await page.setExtraHTTPHeaders({
                 'Referer': 'https://www.google.com/',
