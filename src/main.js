@@ -1,13 +1,7 @@
 import { Actor, log } from 'apify';
-import { PlaywrightCrawler } from 'crawlee';
-import { chromium } from 'playwright-extra';
-import stealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { CheerioCrawler } from 'crawlee';
 import { parseProfile } from './parsers.js';
 import { normalizeProfileUrl, extractSlug, randomDelay, isLoginWall } from './utils.js';
-
-// Enable stealth mode — patches webdriver, chrome.runtime, navigator.plugins,
-// WebGL, canvas fingerprinting, iframe contentWindow, and more.
-chromium.use(stealthPlugin());
 
 await Actor.init();
 
@@ -50,8 +44,11 @@ for (const raw of profileUrls) {
 
 log.info(`Processing ${requests.length} unique profiles (from ${profileUrls.length} inputs)`);
 
+if (cookie) {
+    log.info(`li_at cookie provided (${cookie.length} chars) — will use authenticated requests`);
+}
+
 // ── Proxy ──────────────────────────────────────────────────────────────
-// Force residential + US country for best results against LinkedIn.
 let proxy;
 if (proxyConfig) {
     proxy = await Actor.createProxyConfiguration({
@@ -59,7 +56,6 @@ if (proxyConfig) {
         countryCode: proxyConfig.countryCode || 'US',
     });
 } else {
-    // Fallback: try to use Apify proxy even if not configured
     try {
         proxy = await Actor.createProxyConfiguration({
             groups: ['RESIDENTIAL'],
@@ -76,33 +72,14 @@ let loginWallCount = 0;
 let errorCount = 0;
 
 // ── Crawler ────────────────────────────────────────────────────────────
-const crawler = new PlaywrightCrawler({
+const crawler = new CheerioCrawler({
     proxyConfiguration: proxy,
     maxConcurrency: slowMode ? Math.min(maxConcurrency, 2) : maxConcurrency,
     maxRequestRetries: 5,
-    requestHandlerTimeoutSecs: 120,
-    navigationTimeoutSecs: 60,
+    requestHandlerTimeoutSecs: 60,
+    navigationTimeoutSecs: 30,
 
-    // Use playwright-extra with stealth plugin as the launcher
-    launchContext: {
-        launcher: chromium,
-        launchOptions: {
-            headless: true,
-            args: [
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-            ],
-        },
-    },
-
-    // Disable Crawlee's built-in fingerprints when using stealth plugin
-    // to avoid conflicts between the two fingerprinting systems.
-    browserPoolOptions: {
-        useFingerprints: false,
-    },
-
-    // Session pool: rotates proxy + cookies on each retry so LinkedIn
-    // sees a different "browser" fingerprint after a 999 block.
+    // Session pool: rotates proxy on each retry
     useSessionPool: true,
     persistCookiesPerSession: false,
     sessionPoolOptions: {
@@ -112,36 +89,23 @@ const crawler = new PlaywrightCrawler({
         },
     },
 
-    // Pre-navigation: inject cookie + set headers + realistic delays
+    // Set headers + cookie before each request
     preNavigationHooks: [
-        async ({ page, request }) => {
-            const context = page.context();
+        async ({ request, session }) => {
+            const headers = {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+            };
 
-            // Inject li_at cookie if provided — gives access to unmasked job titles
             if (cookie) {
-                log.info(`Setting li_at cookie (${cookie.length} chars) for ${request.userData.slug}`);
-
-                // Set only the li_at cookie — let LinkedIn establish its own
-                // session cookies (JSESSIONID, etc.) during navigation.
-                // Pre-navigating or faking session cookies causes redirect loops.
-                await context.addCookies([
-                    {
-                        name: 'li_at',
-                        value: cookie,
-                        domain: '.linkedin.com',
-                        path: '/',
-                        httpOnly: true,
-                        secure: true,
-                        sameSite: 'None',
-                    },
-                ]);
+                headers['Cookie'] = `li_at=${cookie}; lang=v=2&lang=en-us`;
+            } else {
+                headers['Referer'] = 'https://www.google.com/';
             }
 
-            // Set realistic headers
-            await page.setExtraHTTPHeaders({
-                'Accept-Language': 'en-US,en;q=0.9',
-                ...(cookie ? {} : { 'Referer': 'https://www.google.com/' }),
-            });
+            request.headers = { ...request.headers, ...headers };
 
             // Delay between requests
             if (slowMode) {
@@ -152,16 +116,12 @@ const crawler = new PlaywrightCrawler({
         },
     ],
 
-    async requestHandler({ request, page, response, session }) {
+    async requestHandler({ request, body, response, session }) {
         const { slug } = request.userData;
-        const statusCode = response?.status();
+        const statusCode = response?.statusCode;
+        const html = body;
 
-        // Log cookie status after navigation
-        if (cookie) {
-            const pageCookies = await page.context().cookies('https://www.linkedin.com');
-            const liAt = pageCookies.find(c => c.name === 'li_at');
-            log.info(`[${slug}] Cookie check after navigation: li_at=${liAt ? 'PRESENT' : 'MISSING'}, status=${statusCode}, total_cookies=${pageCookies.length}`);
-        }
+        log.info(`[${slug}] Got response: status=${statusCode}, body=${html.length} chars`);
 
         // ── Handle 999 (LinkedIn anti-bot block) ───────────────────────
         if (statusCode === 999) {
@@ -198,17 +158,6 @@ const crawler = new PlaywrightCrawler({
             session?.retire();
             throw new Error(`HTTP ${statusCode} for ${slug} — retrying`);
         }
-
-        // Wait for page content to fully load
-        await page.waitForLoadState('domcontentloaded');
-
-        // Simulate human-like behavior: small scroll + wait
-        await page.mouse.move(300 + Math.random() * 200, 400 + Math.random() * 200);
-        await randomDelay(500, 1000);
-        await page.evaluate(() => window.scrollBy(0, 300 + Math.random() * 200));
-        await randomDelay(300, 800);
-
-        const html = await page.content();
 
         // ── Check for login wall / auth redirect in HTML ───────────────
         if (isLoginWall(html)) {
@@ -257,7 +206,6 @@ const crawler = new PlaywrightCrawler({
                 session?.retire();
                 throw new Error(`Got empty/garbage profile for ${slug} (name: "${profile.fullName}") — retrying`);
             }
-            // After retries exhausted, save as blocked
             loginWallCount++;
             await Actor.pushData({
                 profileUrl: request.url,
