@@ -121,18 +121,9 @@ const crawler = new PlaywrightCrawler({
             if (cookie) {
                 log.info(`Setting li_at cookie (${cookie.length} chars) for ${request.userData.slug}`);
 
-                // First, navigate to LinkedIn to let it set its own session cookies
-                // (JSESSIONID, etc.) — faking these causes redirect loops
-                try {
-                    await page.goto('https://www.linkedin.com/', {
-                        waitUntil: 'domcontentloaded',
-                        timeout: 15000,
-                    });
-                } catch {
-                    // Timeout is OK — we just need the cookies set
-                }
-
-                // Now inject li_at on top of LinkedIn's own cookies
+                // Set only the li_at cookie — let LinkedIn establish its own
+                // session cookies (JSESSIONID, etc.) during navigation.
+                // Pre-navigating or faking session cookies causes redirect loops.
                 await context.addCookies([
                     {
                         name: 'li_at',
@@ -140,14 +131,6 @@ const crawler = new PlaywrightCrawler({
                         domain: '.linkedin.com',
                         path: '/',
                         httpOnly: true,
-                        secure: true,
-                        sameSite: 'None',
-                    },
-                    {
-                        name: 'lang',
-                        value: 'v=2&lang=en-us',
-                        domain: '.linkedin.com',
-                        path: '/',
                         secure: true,
                         sameSite: 'None',
                     },
