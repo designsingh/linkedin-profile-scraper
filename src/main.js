@@ -120,6 +120,19 @@ const crawler = new PlaywrightCrawler({
             // Inject li_at cookie if provided — gives access to unmasked job titles
             if (cookie) {
                 log.info(`Setting li_at cookie (${cookie.length} chars) for ${request.userData.slug}`);
+
+                // First, navigate to LinkedIn to let it set its own session cookies
+                // (JSESSIONID, etc.) — faking these causes redirect loops
+                try {
+                    await page.goto('https://www.linkedin.com/', {
+                        waitUntil: 'domcontentloaded',
+                        timeout: 15000,
+                    });
+                } catch {
+                    // Timeout is OK — we just need the cookies set
+                }
+
+                // Now inject li_at on top of LinkedIn's own cookies
                 await context.addCookies([
                     {
                         name: 'li_at',
@@ -127,15 +140,6 @@ const crawler = new PlaywrightCrawler({
                         domain: '.linkedin.com',
                         path: '/',
                         httpOnly: true,
-                        secure: true,
-                        sameSite: 'None',
-                    },
-                    {
-                        name: 'JSESSIONID',
-                        value: `"ajax:${Date.now()}"`,
-                        domain: '.www.linkedin.com',
-                        path: '/',
-                        httpOnly: false,
                         secure: true,
                         sameSite: 'None',
                     },
