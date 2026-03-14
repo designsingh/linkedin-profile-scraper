@@ -1,48 +1,59 @@
 /**
  * Normalize a LinkedIn profile URL or slug into a canonical URL.
- * Accepts:
- *   - https://www.linkedin.com/in/username
- *   - https://linkedin.com/in/username/
- *   - linkedin.com/in/username
- *   - username (bare slug)
+ * Handles: full URLs, protocol-less URLs, bare slugs, invisible chars,
+ * smart quotes, \r\n, zero-width spaces, query params, fragments.
  */
 export function normalizeProfileUrl(input) {
-    let trimmed = input.trim().replace(/\/+$/, '');
+    if (!input || typeof input !== 'string') return null;
 
-    // Handle country-specific subdomains (ca.linkedin.com, uk.linkedin.com, etc.)
-    // and mobile URLs (mwlite)
-    if (/^https?:\/\/([a-z]{2}\.)?linkedin\.com\/(mwlite\/)?in\//i.test(trimmed)) {
-        const slug = trimmed.replace(/^https?:\/\/([a-z]{2}\.)?(www\.)?linkedin\.com\/(mwlite\/)?in\//i, '');
-        return `https://www.linkedin.com/in/${slug}`;
+    // Aggressive cleaning
+    let cleaned = input
+        .replace(/[\r\n\t]/g, '')              // line breaks & tabs
+        .replace(/[\u200B-\u200D\uFEFF]/g, '') // zero-width chars
+        .replace(/[""'']/g, '')                // smart quotes
+        .trim()
+        .replace(/\/+$/, '');                  // trailing slashes
+
+    // Add protocol if missing
+    if (/^(www\.)?linkedin\.com/i.test(cleaned)) {
+        cleaned = 'https://' + cleaned;
     }
 
-    // Missing protocol but has linkedin.com domain (including Www, www, etc.)
-    if (/^(www\.|Www\.)?linkedin\.com\/(mwlite\/)?in\//i.test(trimmed)) {
-        const slug = trimmed.replace(/^(www\.|Www\.)?linkedin\.com\/(mwlite\/)?in\//i, '');
-        return `https://www.linkedin.com/in/${slug}`;
+    // Try URL parsing (handles query params, fragments, etc.)
+    try {
+        const url = new URL(cleaned);
+        const pathMatch = url.pathname.match(/^\/in\/([^/]+)/i);
+        if (pathMatch && url.hostname.match(/linkedin\.com$/i)) {
+            return `https://www.linkedin.com/in/${pathMatch[1].toLowerCase()}`;
+        }
+    } catch {
+        // Not a valid URL — fall through to bare slug check
     }
 
-    // Just the /in/username path (no domain)
-    if (/^\/in\//i.test(trimmed)) {
-        const slug = trimmed.replace(/^\/in\//i, '');
-        if (slug && !slug.includes(' ')) return `https://www.linkedin.com/in/${slug}`;
+    // Bare slug: "preetarjun" or "/in/preetarjun"
+    const bareSlug = cleaned
+        .replace(/^\/?(in\/)?/i, '')
+        .replace(/[/?#].*$/, '');
+
+    if (bareSlug && /^[a-zA-Z0-9][\w-]{2,99}$/.test(bareSlug) && !bareSlug.includes(' ')) {
+        return `https://www.linkedin.com/in/${bareSlug.toLowerCase()}`;
     }
 
-    // Bare slug
-    const slug = trimmed.replace(/^\/+/, '');
-    if (slug && !slug.includes('/') && !slug.includes(' ')) {
-        return `https://www.linkedin.com/in/${slug}`;
-    }
-
-    return null; // Invalid input
+    return null;
 }
 
 /**
  * Extract the username slug from a profile URL.
  */
 export function extractSlug(url) {
-    const match = url.match(/linkedin\.com\/in\/([^/?#]+)/i);
-    return match ? match[1] : null;
+    try {
+        const parsed = new URL(url);
+        const match = parsed.pathname.match(/^\/in\/([^/]+)/i);
+        return match ? match[1].toLowerCase() : null;
+    } catch {
+        const match = url.match(/\/in\/([^/?#]+)/i);
+        return match ? match[1].toLowerCase() : null;
+    }
 }
 
 /**
