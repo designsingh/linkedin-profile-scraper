@@ -1,6 +1,6 @@
 import { Actor, log } from 'apify';
 import { CheerioCrawler } from 'crawlee';
-import { parseProfile, parseVoyagerProfile } from './parsers.js';
+import { parseProfile, parseVoyagerProfile, parseEmbeddedVoyagerData } from './parsers.js';
 import { normalizeProfileUrl, extractSlug, randomDelay, isLoginWall } from './utils.js';
 
 await Actor.init();
@@ -44,8 +44,8 @@ for (const raw of profileUrls) {
     seen.add(slug);
 
     if (cookie) {
-        // When authenticated, use LinkedIn's Voyager API for structured data
-        const apiUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${slug}`;
+        // When authenticated, use LinkedIn's Voyager Dash API for structured data
+        const apiUrl = `https://www.linkedin.com/voyager/api/identity/dash/profiles?q=memberIdentity&memberIdentity=${slug}&decorationId=com.linkedin.voyager.dash.deco.identity.profile.WebTopCardCore-19`;
         requests.push({
             url: apiUrl,
             userData: { slug, profileUrl: url, useApi: true },
@@ -145,7 +145,12 @@ const crawler = new CheerioCrawler({
                 headers['x-li-lang'] = 'en_US';
                 headers['x-restli-protocol-version'] = '2.0.0';
                 headers['x-li-track'] = '{"clientVersion":"1.13.8","mpVersion":"1.13.8","osName":"web","timezoneOffset":-5,"timezone":"America/Toronto","deviceFormFactor":"DESKTOP","mpName":"voyager-web"}';
+            } else if (cookie) {
+                // Authenticated HTML page (API fallback)
+                headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
+                headers['Cookie'] = `li_at=${cookie}; lang=v=2&lang=en-us`;
             } else {
+                // Public page, no cookie
                 headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
                 headers['Referer'] = 'https://www.google.com/';
             }
@@ -184,6 +189,18 @@ const crawler = new CheerioCrawler({
             throw new Error(`HTTP ${statusCode} for ${slug} — cookie may be expired, retrying`);
         }
 
+        // API endpoint deprecated — fall back to HTML scraping
+        if (statusCode === 410 && useApi) {
+            log.warning(`[${slug}] API returned 410 Gone — falling back to HTML page scraping`);
+            // Re-enqueue as HTML request
+            await crawler.addRequests([{
+                url: profileUrl,
+                userData: { slug, profileUrl, useApi: false },
+                uniqueKey: `html-${slug}`,
+            }]);
+            return;
+        }
+
         if (statusCode && statusCode >= 400) {
             session?.retire();
             throw new Error(`HTTP ${statusCode} for ${slug} — retrying`);
@@ -212,7 +229,7 @@ const crawler = new CheerioCrawler({
                 return;
             }
         } else {
-            // ── Parse public HTML page ───────────────────────────────
+            // ── Parse HTML page ──────────────────────────────────────
             const html = body;
 
             if (isLoginWall(html)) {
@@ -226,11 +243,27 @@ const crawler = new CheerioCrawler({
                 return;
             }
 
-            profile = parseProfile(html, profileUrl, {
-                includeExperience,
-                includeEducation,
-                includeSkills,
-            });
+            // If cookie is set, try to extract embedded Voyager data from the SPA HTML first
+            if (cookie) {
+                const embeddedProfile = parseEmbeddedVoyagerData(html, profileUrl, {
+                    includeExperience,
+                    includeEducation,
+                    includeSkills,
+                });
+                if (embeddedProfile && embeddedProfile.fullName && embeddedProfile.dataQuality !== 'minimal') {
+                    profile = embeddedProfile;
+                    log.info(`[${slug}] Parsed embedded Voyager data from HTML`);
+                }
+            }
+
+            // Fall back to standard HTML parsing (JSON-LD + OG tags)
+            if (!profile) {
+                profile = parseProfile(html, profileUrl, {
+                    includeExperience,
+                    includeEducation,
+                    includeSkills,
+                });
+            }
         }
 
         // Sanity check

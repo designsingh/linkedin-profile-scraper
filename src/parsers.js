@@ -436,8 +436,23 @@ export function parseVoyagerProfile(data, profileUrl, options = {}) {
     //   Direct profile object with miniProfile, etc.
 
     // Find the main profile data
+    // Dash API returns { data: {}, included: [] } or { elements: [{}], included: [] }
     const included = data.included || [];
-    const profileData = data.data || data;
+    let profileData = data.data || data;
+
+    // Dash API wraps in elements array
+    if (data.elements && Array.isArray(data.elements) && data.elements.length > 0) {
+        profileData = data.elements[0];
+    }
+
+    // Also search included for the main profile entity
+    const profileEntity = included.find(item =>
+        (item.$type?.includes('Profile') || item.$type?.includes('MiniProfile'))
+        && item.firstName && item.lastName
+    );
+    if (profileEntity && !profileData.firstName) {
+        profileData = { ...profileEntity, ...profileData };
+    }
 
     // Extract from the main profile object
     const fullName = profileData.firstName && profileData.lastName
@@ -518,6 +533,46 @@ export function parseVoyagerProfile(data, profileUrl, options = {}) {
         loginWallDetected: false,
         scrapedAt: new Date().toISOString(),
     };
+}
+
+/**
+ * Parse embedded Voyager JSON data from LinkedIn's authenticated SPA HTML.
+ * LinkedIn embeds profile data in <code> elements as JSON wrapped in HTML comments.
+ */
+export function parseEmbeddedVoyagerData(html, profileUrl, options = {}) {
+    try {
+        const $ = cheerio.load(html);
+        const allIncluded = [];
+
+        // LinkedIn embeds data in <code> tags: <!--{"data":...}-->
+        $('code').each((_, el) => {
+            const raw = $(el).html();
+            if (!raw) return;
+
+            // Strip HTML comment markers
+            const jsonStr = raw.replace(/^<!--/, '').replace(/-->$/, '').trim();
+            if (!jsonStr.startsWith('{') && !jsonStr.startsWith('[')) return;
+
+            try {
+                const parsed = JSON.parse(jsonStr);
+                if (parsed.included && Array.isArray(parsed.included)) {
+                    allIncluded.push(...parsed.included);
+                }
+                if (parsed.data?.included && Array.isArray(parsed.data.included)) {
+                    allIncluded.push(...parsed.data.included);
+                }
+            } catch {
+                // Not valid JSON, skip
+            }
+        });
+
+        if (allIncluded.length === 0) return null;
+
+        // Build a synthetic Voyager response and use the existing parser
+        return parseVoyagerProfile({ included: allIncluded }, profileUrl, options);
+    } catch {
+        return null;
+    }
 }
 
 function findInIncluded(included, firstNameField, lastNameField) {
