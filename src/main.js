@@ -1,6 +1,6 @@
 import { Actor, log } from 'apify';
 import { CheerioCrawler } from 'crawlee';
-import { parseProfile } from './parsers.js';
+import { parseProfile, parseVoyagerProfile } from './parsers.js';
 import { normalizeProfileUrl, extractSlug, randomDelay, isLoginWall } from './utils.js';
 
 await Actor.init();
@@ -27,6 +27,9 @@ if (!profileUrls.length) {
 const seen = new Set();
 const requests = [];
 
+// Generate a CSRF token for Voyager API requests
+const csrfToken = `ajax:${Date.now()}`;
+
 for (const raw of profileUrls) {
     const url = normalizeProfileUrl(raw);
     if (!url) {
@@ -39,13 +42,24 @@ for (const raw of profileUrls) {
         continue;
     }
     seen.add(slug);
-    requests.push({ url, userData: { slug } });
+
+    if (cookie) {
+        // When authenticated, use LinkedIn's Voyager API for structured data
+        const apiUrl = `https://www.linkedin.com/voyager/api/identity/profiles/${slug}`;
+        requests.push({
+            url: apiUrl,
+            userData: { slug, profileUrl: url, useApi: true },
+        });
+    } else {
+        // Without cookie, scrape the public profile HTML
+        requests.push({ url, userData: { slug, profileUrl: url, useApi: false } });
+    }
 }
 
 log.info(`Processing ${requests.length} unique profiles (from ${profileUrls.length} inputs)`);
 
 if (cookie) {
-    log.info(`li_at cookie provided (${cookie.length} chars) — will use authenticated requests`);
+    log.info(`li_at cookie provided (${cookie.length} chars) — using Voyager API for full data`);
 }
 
 // ── Proxy ──────────────────────────────────────────────────────────────
@@ -71,6 +85,29 @@ let successCount = 0;
 let loginWallCount = 0;
 let errorCount = 0;
 
+// ── Empty result helper ───────────────────────────────────────────────
+function emptyResult(profileUrl, quality, opts = {}) {
+    return {
+        profileUrl,
+        fullName: '',
+        headline: '',
+        currentTitle: '',
+        currentCompany: '',
+        currentCompanyUrl: '',
+        location: '',
+        about: '',
+        profileImageUrl: '',
+        experienceCount: 0,
+        educationCount: 0,
+        followerCount: '',
+        connectionCount: '',
+        dataQuality: quality,
+        loginWallDetected: opts.loginWall || false,
+        error: opts.error || undefined,
+        scrapedAt: new Date().toISOString(),
+    };
+}
+
 // ── Crawler ────────────────────────────────────────────────────────────
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxy,
@@ -78,6 +115,9 @@ const crawler = new CheerioCrawler({
     maxRequestRetries: 5,
     requestHandlerTimeoutSecs: 60,
     navigationTimeoutSecs: 30,
+
+    // Accept JSON responses from Voyager API
+    additionalMimeTypes: ['application/json'],
 
     // Session pool: rotates proxy on each retry
     useSessionPool: true,
@@ -91,17 +131,22 @@ const crawler = new CheerioCrawler({
 
     // Set headers + cookie before each request
     preNavigationHooks: [
-        async ({ request, session }) => {
+        async ({ request }) => {
             const headers = {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache',
             };
 
-            if (cookie) {
-                headers['Cookie'] = `li_at=${cookie}; lang=v=2&lang=en-us`;
+            if (cookie && request.userData.useApi) {
+                // Voyager API headers
+                headers['Accept'] = 'application/vnd.linkedin.normalized+json+2.1';
+                headers['Cookie'] = `li_at=${cookie}; JSESSIONID="${csrfToken}"; lang=v=2&lang=en-us`;
+                headers['csrf-token'] = csrfToken;
+                headers['x-li-lang'] = 'en_US';
+                headers['x-restli-protocol-version'] = '2.0.0';
+                headers['x-li-track'] = '{"clientVersion":"1.13.8","mpVersion":"1.13.8","osName":"web","timezoneOffset":-5,"timezone":"America/Toronto","deviceFormFactor":"DESKTOP","mpName":"voyager-web"}';
             } else {
+                headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
                 headers['Referer'] = 'https://www.google.com/';
             }
 
@@ -117,89 +162,81 @@ const crawler = new CheerioCrawler({
     ],
 
     async requestHandler({ request, body, response, session }) {
-        const { slug } = request.userData;
+        const { slug, profileUrl, useApi } = request.userData;
         const statusCode = response?.statusCode;
-        const html = body;
 
-        log.info(`[${slug}] Got response: status=${statusCode}, body=${html.length} chars`);
+        log.info(`[${slug}] Got response: status=${statusCode}, body=${body.length} chars, api=${useApi}`);
 
-        // ── Handle 999 (LinkedIn anti-bot block) ───────────────────────
+        // ── Handle error status codes ────────────────────────────────
         if (statusCode === 999) {
             session?.retire();
             throw new Error(`LinkedIn returned 999 for ${slug} — session retired, will retry with new proxy`);
         }
 
-        // ── Handle 404 (profile doesn't exist) — don't waste retries ──
         if (statusCode === 404) {
             log.warning(`Profile not found (404) for ${slug} — skipping`);
-            await Actor.pushData({
-                profileUrl: request.url,
-                fullName: '',
-                headline: '',
-                currentTitle: '',
-                currentCompany: '',
-                currentCompanyUrl: '',
-                location: '',
-                about: '',
-                profileImageUrl: '',
-                experienceCount: 0,
-                educationCount: 0,
-                followerCount: '',
-                connectionCount: '',
-                dataQuality: 'not_found',
-                loginWallDetected: false,
-                scrapedAt: new Date().toISOString(),
-            });
+            await Actor.pushData(emptyResult(profileUrl, 'not_found'));
             return;
         }
 
-        // ── Handle other non-2xx ───────────────────────────────────────
+        if (statusCode === 401 || statusCode === 403) {
+            session?.retire();
+            throw new Error(`HTTP ${statusCode} for ${slug} — cookie may be expired, retrying`);
+        }
+
         if (statusCode && statusCode >= 400) {
             session?.retire();
             throw new Error(`HTTP ${statusCode} for ${slug} — retrying`);
         }
 
-        // ── Check for login wall / auth redirect in HTML ───────────────
-        if (isLoginWall(html)) {
-            log.warning(`Login wall detected for ${slug} (status: ${statusCode})`);
-            if (request.retryCount < 3) {
-                session?.retire();
-                throw new Error(`Login wall for ${slug} — retrying with new session`);
-            }
-            loginWallCount++;
+        let profile;
 
-            await Actor.pushData({
-                profileUrl: request.url,
-                fullName: '',
-                headline: '',
-                currentTitle: '',
-                currentCompany: '',
-                currentCompanyUrl: '',
-                location: '',
-                about: '',
-                profileImageUrl: '',
-                experienceCount: 0,
-                educationCount: 0,
-                followerCount: '',
-                connectionCount: '',
-                dataQuality: 'blocked',
-                loginWallDetected: true,
-                scrapedAt: new Date().toISOString(),
+        if (useApi) {
+            // ── Parse Voyager API JSON response ──────────────────────
+            try {
+                const data = typeof body === 'string' ? JSON.parse(body) : body;
+                profile = parseVoyagerProfile(data, profileUrl, {
+                    includeExperience,
+                    includeEducation,
+                    includeSkills,
+                });
+                log.info(`[${slug}] Voyager API parsed: ${profile.fullName}, title=${profile.currentTitle}`);
+            } catch (e) {
+                log.warning(`[${slug}] Failed to parse Voyager API response: ${e.message}`);
+                if (request.retryCount < 3) {
+                    session?.retire();
+                    throw new Error(`Voyager parse failed for ${slug} — retrying`);
+                }
+                await Actor.pushData(emptyResult(profileUrl, 'failed', { error: e.message }));
+                errorCount++;
+                return;
+            }
+        } else {
+            // ── Parse public HTML page ───────────────────────────────
+            const html = body;
+
+            if (isLoginWall(html)) {
+                log.warning(`Login wall detected for ${slug} (status: ${statusCode})`);
+                if (request.retryCount < 3) {
+                    session?.retire();
+                    throw new Error(`Login wall for ${slug} — retrying with new session`);
+                }
+                loginWallCount++;
+                await Actor.pushData(emptyResult(profileUrl, 'blocked', { loginWall: true }));
+                return;
+            }
+
+            profile = parseProfile(html, profileUrl, {
+                includeExperience,
+                includeEducation,
+                includeSkills,
             });
-            return;
         }
 
-        // ── Parse the profile ──────────────────────────────────────────
-        const profile = parseProfile(html, request.url, {
-            includeExperience,
-            includeEducation,
-            includeSkills,
-        });
-
-        // Sanity check: if name is empty or is the login page title, the page is garbage
+        // Sanity check
         const isGarbage = !profile.fullName
             || profile.dataQuality === 'minimal'
-            || /log\s*in|sign\s*up/i.test(profile.fullName);
+            || /log\s*in|sign\s*up|linkedin/i.test(profile.fullName);
 
         if (isGarbage) {
             if (request.retryCount < 3) {
@@ -207,24 +244,7 @@ const crawler = new CheerioCrawler({
                 throw new Error(`Got empty/garbage profile for ${slug} (name: "${profile.fullName}") — retrying`);
             }
             loginWallCount++;
-            await Actor.pushData({
-                profileUrl: request.url,
-                fullName: '',
-                headline: '',
-                currentTitle: '',
-                currentCompany: '',
-                currentCompanyUrl: '',
-                location: '',
-                about: '',
-                profileImageUrl: '',
-                experienceCount: 0,
-                educationCount: 0,
-                followerCount: '',
-                connectionCount: '',
-                dataQuality: 'blocked',
-                loginWallDetected: true,
-                scrapedAt: new Date().toISOString(),
-            });
+            await Actor.pushData(emptyResult(profileUrl, 'blocked', { loginWall: true }));
             return;
         }
 
@@ -243,29 +263,10 @@ const crawler = new CheerioCrawler({
     },
 
     async failedRequestHandler({ request }, error) {
-        const { slug } = request.userData;
+        const { slug, profileUrl } = request.userData;
         errorCount++;
         log.error(`✗ Failed to scrape ${slug} after retries: ${error.message}`);
-
-        await Actor.pushData({
-            profileUrl: request.url,
-            fullName: '',
-            headline: '',
-            currentTitle: '',
-            currentCompany: '',
-            currentCompanyUrl: '',
-            location: '',
-            about: '',
-            profileImageUrl: '',
-            experienceCount: 0,
-            educationCount: 0,
-            followerCount: '',
-            connectionCount: '',
-            dataQuality: 'failed',
-            loginWallDetected: false,
-            error: error.message,
-            scrapedAt: new Date().toISOString(),
-        });
+        await Actor.pushData(emptyResult(profileUrl, 'failed', { error: error.message }));
     },
 });
 

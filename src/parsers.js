@@ -415,3 +415,300 @@ function parseDateRange(dateRange) {
         isCurrent,
     };
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// Voyager API parser (authenticated responses)
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Parse a LinkedIn Voyager API profile response.
+ * The API returns normalized JSON with an `included` array containing
+ * all entities (profile, positions, education, skills, etc.)
+ */
+export function parseVoyagerProfile(data, profileUrl, options = {}) {
+    const { includeExperience = true, includeEducation = true, includeSkills = false } = options;
+
+    // The Voyager API response has different shapes depending on the endpoint.
+    // Common patterns:
+    //   { data: { ... }, included: [ ... ] }
+    //   { elements: [ ... ], ... }
+    //   Direct profile object with miniProfile, etc.
+
+    // Find the main profile data
+    const included = data.included || [];
+    const profileData = data.data || data;
+
+    // Extract from the main profile object
+    const fullName = profileData.firstName && profileData.lastName
+        ? `${profileData.firstName} ${profileData.lastName}`
+        : findInIncluded(included, 'firstName', 'lastName');
+
+    const headline = profileData.headline
+        || findFieldInIncluded(included, 'headline')
+        || '';
+
+    const location = profileData.locationName
+        || profileData.geoLocationName
+        || findFieldInIncluded(included, 'locationName')
+        || findFieldInIncluded(included, 'geoLocationName')
+        || '';
+
+    const about = profileData.summary
+        || findFieldInIncluded(included, 'summary')
+        || '';
+
+    const industryName = profileData.industryName
+        || findFieldInIncluded(included, 'industryName')
+        || '';
+
+    // Profile image
+    const profileImageUrl = extractVoyagerImage(profileData)
+        || extractVoyagerImageFromIncluded(included)
+        || '';
+
+    // Current role from headline or positions
+    const { currentTitle, currentCompany, currentCompanyUrl } = extractVoyagerCurrentRole(
+        profileData, included, headline
+    );
+
+    // Experience
+    let experience = [];
+    let experienceCount = 0;
+    if (includeExperience) {
+        experience = extractVoyagerExperience(included);
+        experienceCount = experience.length;
+    }
+
+    // Education
+    let education = [];
+    let educationCount = 0;
+    if (includeEducation) {
+        education = extractVoyagerEducation(included);
+        educationCount = education.length;
+    }
+
+    // Skills
+    let skills = [];
+    if (includeSkills) {
+        skills = extractVoyagerSkills(included);
+    }
+
+    const dataQuality = fullName ? 'full' : 'minimal';
+
+    return {
+        profileUrl,
+        fullName,
+        headline,
+        currentTitle,
+        currentCompany,
+        currentCompanyUrl,
+        location,
+        about: about.substring(0, 2000),
+        profileImageUrl,
+        industryName,
+        experience: includeExperience ? experience : undefined,
+        experienceCount,
+        education: includeEducation ? education : undefined,
+        educationCount,
+        skills: includeSkills ? skills : undefined,
+        followerCount: '',
+        connectionCount: '',
+        dataQuality,
+        loginWallDetected: false,
+        scrapedAt: new Date().toISOString(),
+    };
+}
+
+function findInIncluded(included, firstNameField, lastNameField) {
+    for (const item of included) {
+        if (item[firstNameField] && item[lastNameField]) {
+            return `${item[firstNameField]} ${item[lastNameField]}`;
+        }
+    }
+    return '';
+}
+
+function findFieldInIncluded(included, field) {
+    for (const item of included) {
+        if (item[field] && typeof item[field] === 'string') {
+            return item[field];
+        }
+    }
+    return '';
+}
+
+function extractVoyagerImage(profileData) {
+    // Profile images are in displayPictureUrl or profilePicture
+    const pic = profileData.profilePicture || profileData.displayPictureUrl;
+    if (typeof pic === 'string') return pic;
+    if (pic?.displayImage) {
+        // It's a reference like "urn:li:digitalmediaAsset:..."
+        // The actual URLs are in the included array
+        return '';
+    }
+    // Try displayPictureUrl + img_XXX format
+    const base = profileData.displayPictureUrl;
+    const suffix = profileData.img_800_800 || profileData.img_400_400 || profileData.img_200_200;
+    if (base && suffix) return base + suffix;
+    return '';
+}
+
+function extractVoyagerImageFromIncluded(included) {
+    for (const item of included) {
+        // Look for vectorImage or displayImageReference
+        if (item.$type?.includes('Photo') || item.$type?.includes('Image')) {
+            const artifacts = item.displayImageReference?.vectorImage?.artifacts
+                || item.vectorImage?.artifacts
+                || [];
+            if (artifacts.length > 0) {
+                const largest = artifacts[artifacts.length - 1];
+                const root = item.displayImageReference?.vectorImage?.rootUrl
+                    || item.vectorImage?.rootUrl || '';
+                return root + (largest.fileIdentifyingUrlPathSegment || '');
+            }
+        }
+        // Simple displayPictureUrl
+        if (item.displayPictureUrl && item.img_400_400) {
+            return item.displayPictureUrl + item.img_400_400;
+        }
+    }
+    return '';
+}
+
+function extractVoyagerCurrentRole(profileData, included, headline) {
+    let currentTitle = '';
+    let currentCompany = '';
+    let currentCompanyUrl = '';
+
+    // Try to get from positions in included array
+    const positions = included.filter(item =>
+        item.$type?.includes('Position') ||
+        item.$type?.includes('position')
+    );
+
+    // Find current position (no end date or timePeriod.endDate)
+    const currentPos = positions.find(p => {
+        if (p.timePeriod && !p.timePeriod.endDate) return true;
+        if (p.dateRange && !p.dateRange.end) return true;
+        return false;
+    }) || positions[0]; // fallback to first position
+
+    if (currentPos) {
+        currentTitle = currentPos.title || '';
+        currentCompany = currentPos.companyName || '';
+        currentCompanyUrl = currentPos.companyUrn || '';
+
+        // If company name is missing, look it up in included
+        if (!currentCompany && currentPos.company) {
+            const companyRef = currentPos.company['*miniCompany'] || currentPos.company;
+            if (typeof companyRef === 'string') {
+                const companyEntity = included.find(i => i.entityUrn === companyRef);
+                if (companyEntity) {
+                    currentCompany = companyEntity.name || '';
+                }
+            }
+        }
+    }
+
+    // Fallback: parse headline "Title at Company"
+    if (!currentTitle && headline) {
+        const atMatch = headline.match(/^(.+?)\s+(?:at|@)\s+(.+)$/i);
+        if (atMatch) {
+            currentTitle = atMatch[1].trim();
+            if (!currentCompany) currentCompany = atMatch[2].trim();
+        } else {
+            // Headline might just be the title
+            currentTitle = headline;
+        }
+    }
+
+    return { currentTitle, currentCompany, currentCompanyUrl };
+}
+
+function extractVoyagerExperience(included) {
+    const experiences = [];
+
+    const positions = included.filter(item =>
+        item.$type?.includes('Position') ||
+        item.$type?.includes('position')
+    );
+
+    for (const pos of positions) {
+        const startDate = pos.timePeriod?.startDate
+            ? formatVoyagerDate(pos.timePeriod.startDate)
+            : (pos.dateRange?.start ? formatVoyagerDate(pos.dateRange.start) : '');
+        const endDate = pos.timePeriod?.endDate
+            ? formatVoyagerDate(pos.timePeriod.endDate)
+            : (pos.dateRange?.end ? formatVoyagerDate(pos.dateRange.end) : '');
+        const isCurrent = !pos.timePeriod?.endDate && !pos.dateRange?.end;
+
+        experiences.push({
+            title: pos.title || '',
+            company: pos.companyName || '',
+            companyUrl: pos.companyUrn || '',
+            location: pos.locationName || pos.geoLocationName || '',
+            startDate,
+            endDate: isCurrent ? 'Present' : endDate,
+            isCurrent,
+        });
+    }
+
+    return experiences;
+}
+
+function extractVoyagerEducation(included) {
+    const education = [];
+
+    const schools = included.filter(item =>
+        item.$type?.includes('Education') ||
+        item.$type?.includes('education')
+    );
+
+    for (const edu of schools) {
+        const startDate = edu.timePeriod?.startDate
+            ? formatVoyagerDate(edu.timePeriod.startDate)
+            : '';
+        const endDate = edu.timePeriod?.endDate
+            ? formatVoyagerDate(edu.timePeriod.endDate)
+            : '';
+
+        education.push({
+            school: edu.schoolName || edu.school || '',
+            degree: edu.degreeName || edu.degree || '',
+            fieldOfStudy: edu.fieldOfStudy || '',
+            startDate,
+            endDate,
+        });
+    }
+
+    return education;
+}
+
+function extractVoyagerSkills(included) {
+    const skills = [];
+
+    const skillEntities = included.filter(item =>
+        item.$type?.includes('Skill') ||
+        item.$type?.includes('skill')
+    );
+
+    for (const skill of skillEntities) {
+        const name = skill.name || skill.skill?.name || '';
+        if (name && !skills.includes(name)) {
+            skills.push(name);
+        }
+    }
+
+    return skills;
+}
+
+function formatVoyagerDate(dateObj) {
+    if (!dateObj) return '';
+    const { year, month } = dateObj;
+    if (year && month) {
+        return `${year}-${String(month).padStart(2, '0')}`;
+    }
+    if (year) return String(year);
+    return '';
+}
