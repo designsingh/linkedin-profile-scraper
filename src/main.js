@@ -117,7 +117,7 @@ const crawler = new CheerioCrawler({
     navigationTimeoutSecs: 30,
 
     // Accept JSON responses from Voyager API
-    additionalMimeTypes: ['application/json'],
+    additionalMimeTypes: ['application/json', 'application/vnd.linkedin.normalized+json+2.1'],
 
     // Session pool: rotates proxy on each retry
     useSessionPool: true,
